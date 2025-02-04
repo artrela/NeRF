@@ -10,7 +10,7 @@ class PositionalEncoding(torch.nn.Module):
         
         self.L = L
         _map = np.array([[(2**i) * np.pi, (2**i) * np.pi] for i in range(L)]).flatten()
-        self.register_buffer('map', torch.FloatTensor(_map))
+        self.register_buffer('map', torch.tensor(_map, dtype=torch.float32))
                 
     def forward(self, x: torch.Tensor)->torch.Tensor:
         """Generate positional encoding for tensor x.
