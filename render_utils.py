@@ -7,7 +7,7 @@ def c_pred(sigma, c, t):
     
     delta = torch.diff(t).to(device=c.device)    
     
-    Ti = torch.cumsum( torch.exp( -sigma[:, :-1] * delta), dim=-1).to(device=c.device) 
+    Ti = torch.exp( - torch.cumsum( sigma[:, :-1] * delta, dim=-1)).to(device=c.device) 
     
     c_hat = torch.sum(Ti[..., None] * (1 - torch.exp(-sigma[:, :-1, None] * delta[..., None])) * c[:, :-1 , :], dim=1)
 
