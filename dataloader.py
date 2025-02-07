@@ -6,7 +6,7 @@ import sys
 import torch
 
 class SyntheticDataloader():
-    def __init__(self, pth, item, split="train"):
+    def __init__(self, pth, item, split):
         
         data_pth = os.path.join(pth + "/" + item)
         
@@ -15,14 +15,14 @@ class SyntheticDataloader():
             data_file.close()
         
         transforms = []
-        max_t = np.zeros(3)
+        # max_t = np.zeros(3)
         for image in data['frames']:
             transforms.append(image['transform_matrix'])
-            t = np.array(image['transform_matrix'])[:3, 3]
-            if np.linalg.norm(max_t) < np.linalg.norm(t):
-                max_t = t
+            # t = np.array(image['transform_matrix'])[:3, 3]
+            # if np.linalg.norm(max_t) < np.linalg.norm(t):
+            #     max_t = t
         
-        self.max_t = max_t
+        # self.max_t = max_t
         self.transforms = np.stack(transforms, axis=0) 
         
         open_image = lambda img: np.asarray(Image.open(data_pth + img + ".png").convert("RGB")) / 255.
@@ -30,7 +30,7 @@ class SyntheticDataloader():
         
         self.total_pxs = self.images[0].shape[0] * self.images[0].shape[1]
         self.img_shape = self.images[0].shape[:2]
-        self.img_shape = (800, 800)
+        # self.img_shape = (800, 800)
         
         self.f = (self.img_shape[0] / 2) / np.tan( data['camera_angle_x'] / 2 ) 
         self.cx =  self.img_shape[0] / 2
@@ -55,6 +55,7 @@ class SyntheticDataloader():
         # TODO change back to 1 afterwards!
         # d = np.dstack((xc, yc, np.ones(xc.shape))) @ R
         d = np.dstack((xc, yc, -np.ones(xc.shape))) @ R
+        d /= np.linalg.norm(d, axis=-1)
         o = np.ones((*self.img_shape, 1)) @ t
         
         # o += np.random.uniform(-0.0005, 0.0005, o.shape)
