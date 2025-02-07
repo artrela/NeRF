@@ -20,5 +20,6 @@ def stratified_sampling_rays(N, tn, tf, rays=3):
     '''
     samples = np.random.uniform(low=0, high=(1/N)*(tf - tn), size=(rays, N))
     i = np.expand_dims(np.arange(0, N), 0)
+    t = torch.tensor(tn + (i/N)*(tf - tn) + samples, dtype=torch.float32, device="cuda")
     
-    return tn + (i/N)*(tf - tn) + samples
+    return t
