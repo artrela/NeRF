@@ -9,9 +9,11 @@ def c_pred(sigma, c, t):
     
     Ti = torch.exp( - torch.cumsum( sigma[:, :-1] * delta, dim=-1)).to(device=c.device) 
     
-    c_hat = torch.sum(Ti[..., None] * (1 - torch.exp(-sigma[:, :-1, None] * delta[..., None])) * c[:, :-1 , :], dim=1)
+    wi = Ti[..., None] * (1 - torch.exp(-sigma[:, :-1, None] * delta[..., None]))
+    
+    c_hat = torch.sum( wi * c[:, :-1 , :], dim=1)
 
-    return c_hat
+    return c_hat, wi
 
 
 def stratified_sampling_rays(N, tn, tf, rays=3):
