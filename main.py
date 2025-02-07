@@ -9,7 +9,7 @@ from torchinfo import summary
 from torch.utils.tensorboard import SummaryWriter
 import os
 
-exp_name = "new_model_more_samp"
+exp_name = "fine_nerf"
 writer = SummaryWriter(log_dir=f"runs/{exp_name}/")
 os.makedirs(f"data/model_out/{exp_name}", exist_ok=True)
 #
@@ -18,18 +18,22 @@ epochs = int(10000)
 # select a number of rays that goes cleanly into the 
 num_images = 100
 rays_per_image = 400
-Nc = 400
-tn, tf = 0.1, 2.
+Nc = 64
+Nf = 128
+tn, tf = 2.0, 6.0
 
 device = 'cuda'
-nerf = NeRF()
+coarse_nerf = NeRF()
+fine_nerf = NeRF()
 # summary(nerf, input_size=((rays_per_image, Nc, 3), (rays_per_image, Nc, 3)), depth=4, col_names=( "input_size", "output_size", "num_params"))
-nerf.to(device)
+coarse_nerf.to(device)
+fine_nerf.to(device)
 
 criterion = torch.nn.MSELoss()
 
 lr = 5e-4
-optimizer = torch.optim.AdamW(nerf.parameters(), lr=lr)
+# optimizer = torch.optim.AdamW(coarse_nerf.parameters(), lr=lr)
+optimizer = torch.optim.AdamW(list(fine_nerf.parameters()) + list(coarse_nerf.parameters()), lr=lr)
 
 gamma = 0.1**(1/epochs)
 lr_scheduler = torch.optim.lr_scheduler.LinearLR(optimizer, start_factor=1, end_factor=0.1, total_iters=epochs)
@@ -38,10 +42,10 @@ train_dset = SyntheticDataloader("data/nerf_synthetic/", "hotdog", "train")
 val_dset = SyntheticDataloader("data/nerf_synthetic/", "hotdog", "val")
 assert len(train_dset) == len(val_dset)
 
-max_t = max(np.linalg.norm(train_dset.max_t), np.linalg.norm(val_dset.max_t))
-for i in range(len(train_dset)):
-    train_dset.transforms[i][:3, 3] /= max_t
-    val_dset.transforms[i][:3, 3] /= max_t
+# max_t = max(np.linalg.norm(train_dset.max_t), np.linalg.norm(val_dset.max_t))
+# for i in range(len(train_dset)):
+#     train_dset.transforms[i][:3, 3] /= max_t
+#     val_dset.transforms[i][:3, 3] /= max_t
 
 fig, ax = plt.subplots(2, 2)
 for a in ax.ravel():
@@ -49,21 +53,29 @@ for a in ax.ravel():
     a.set_yticks([])
 
 # TODO pass in pixels so u can run test and train
-def render(dset, pose, u, v, rays):
+def render(dset, nerf, pose, u, v, rays, w=None, tin=None):
     
-    o, d = dset.create_rays(pose[:3, :3], pose[:3, 3][None, ...])
+    o, d = dset.create_rays(pose[:3, :3], pose[None, :3, 3])
     
-    t = stratified_sampling_rays(tn=tn, tf=tf, N=Nc, rays=rays)
-    
-    x = o[u, v][:, None, :] + t[..., None]*d[u, v][:, None, :]
-    d = d[u, v][:, None, :].expand(-1, Nc, -1)
+    if type(w) == type(None):
+        t = stratified_sampling_rays(tn=tn, tf=tf, N=Nc, rays=rays)
+        
+        x = o[u, None, v] + t[..., None]*d[u, None, v]
+        d = d[u, None, v].expand(-1, Nc, -1)
+    else:
+        pdf = w / torch.sum(w, axis=1, keepdim=True)
+        sample_idx = torch.multinomial(pdf, num_samples=Nf, replacement=True)
+        t = torch.gather(tin, -1, sample_idx)
+        
+        x = o[u, None, v] + t[..., None]*d[u, None, v]
+        d = d[u, None, v].expand(-1, Nf, -1)
     
     #TODO check
     sigma, c = nerf(x, d)
     
-    c_hat = c_pred(sigma.squeeze(-1), c, t)
+    c_hat, wi = c_pred(sigma.squeeze(-1), c, t)
     
-    return c_hat
+    return c_hat, wi.squeeze(-1), t
 
 random_images = np.arange(0, len(train_dset), 1)
 # random_images = [0, 0] # np.arange(0, len(train_dset), 1)
@@ -84,15 +96,17 @@ for i in tqdm.tqdm(range(epochs), desc=f"[Training]", leave=True):
         optimizer.zero_grad()
         
         # print(20*"=", idx, 20*"=")   
-        c_hat = render(train_dset, pose, u, v, rays_per_image)
+        coarse_c_hat, wi, ti = render(train_dset, coarse_nerf, pose, u, v, rays_per_image)
+        fine_c_hat, _, _ = render(train_dset, fine_nerf, pose, u, v, rays_per_image, wi, ti)
         c_true = torch.tensor(image[u, v], dtype=torch.float32, device=device)
         
         # print("Zero pred c?: ", torch.all(c_hat == 0).item())
-        if torch.all(c_hat == 0).item() == True:
-            tqdm.tqdm.write("[Warning] predicted blank pixels...")
+        # if torch.all(c_hat == 0).item() == True:
+            # tqdm.tqdm.write("[Warning] predicted blank pixels...")
         
         # print(c_hat.detype, c_true.dtype)
-        loss = criterion(c_hat, c_true)
+        loss = criterion(coarse_c_hat, c_true) + criterion(fine_c_hat, c_true)
+        # loss = criterion(c_true, c_true)
         loss.backward()
         optimizer.step()
         
@@ -111,7 +125,7 @@ for i in tqdm.tqdm(range(epochs), desc=f"[Training]", leave=True):
         vimage_est = np.zeros_like(image)
         timage_est = np.zeros_like(image)
         
-        bundle = 3200
+        bundle = 1600
         step = bundle // train_dset.img_shape[0]
         for row in tqdm.tqdm(range(0, image.shape[0], step), desc="[Val] Rendering Estimate"):
         # for row in range(image.shape[0]):
@@ -129,8 +143,8 @@ for i in tqdm.tqdm(range(epochs), desc=f"[Training]", leave=True):
                         u = u.flatten()
                         v = v.flatten()
                         
-                    vc_hat = render(val_dset, vpose, u, v, bundle)
-                    tc_hat = render(train_dset, tpose, u, v, bundle)
+                    vc_hat, _, _ = render(val_dset, fine_nerf, vpose, u, v, bundle)
+                    tc_hat, _, _ = render(train_dset, fine_nerf, tpose, u, v, bundle)
                     
                     vimage_est[u, v] = vc_hat.cpu().numpy()
                     timage_est[u, v] = tc_hat.cpu().numpy()
