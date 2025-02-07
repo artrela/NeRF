@@ -30,24 +30,38 @@ class PositionalEncoding(torch.nn.Module):
         
 
 class FFN(torch.nn.Module):
-    def __init__(self, in_feats: int, num_layers: int, out_feats: Optional[int]=None):
+    def __init__(self, in_feats: int, num_layers: int, skips: list, out_feats: Optional[int]=None):
         super().__init__()
         
         layers = []
         for layer  in range(num_layers):
             if layer == 0:
                 layers.append(torch.nn.Linear(in_feats, 256))
+            elif layer in skips:
+                layers.append(torch.nn.Linear(256+in_feats, 256))
             elif out_feats and layer == num_layers-1:
                 layers.append(torch.nn.Linear(256, out_feats))
             else:
                 layers.append(torch.nn.Linear(256, 256))
-                
-            layers.append(torch.nn.ReLU())
-        
-        self.network = torch.nn.Sequential(*layers)
+            
+        self.network = torch.nn.ModuleList(layers)
+        self.skips = skips
         
     def forward(self, x: torch.Tensor)->torch.Tensor:
-        return self.network(x)
+        
+        inp = x.clone()
+        for idx, layer in enumerate(self.network):
+            
+            if idx not in self.skips:
+                x = layer(x)
+            else:
+                x = layer(torch.concat((x, inp), dim=-1))
+                
+            if idx != len(self.network):
+                x = F.relu(x)
+                
+        return x
+                
         
 
 class NeRF(torch.nn.Module):
@@ -57,8 +71,8 @@ class NeRF(torch.nn.Module):
         self.model = torch.nn.ModuleDict({
             "x_pe": PositionalEncoding(10),
             "d_pe": PositionalEncoding(4),
-            "ffn1": FFN(in_feats=60, num_layers=5),
-            "ffn2": FFN(in_feats=60+256, out_feats=257, num_layers=3),
+            "ffn": FFN(in_feats=60, num_layers=8, skips=[4]),
+            "sigma_layer": torch.nn.Linear(in_features=256, out_features=1),
             "proj": torch.nn.Linear(in_features=256+24, out_features=128),
             "out": torch.nn.Linear(in_features=128, out_features=3)
         })
@@ -66,14 +80,13 @@ class NeRF(torch.nn.Module):
     def forward(self, x: torch.Tensor, d: torch.Tensor):
         
         gamma_x = self.model["x_pe"](x)
+
+        hidden_feats = self.model["ffn"](gamma_x)
         
-        hidden_feats = torch.cat((gamma_x, self.model["ffn1"](gamma_x)), dim=-1)
-        hidden_feats = self.model["ffn2"](hidden_feats)
-        
-        sigma, feats = hidden_feats[..., 0], hidden_feats[..., 1:]
+        sigma = self.model["sigma_layer"](hidden_feats).squeeze(-1)
         
         gamma_d = self.model["d_pe"](d)
-        rgb = F.relu(self.model["proj"](torch.cat((feats, gamma_d), dim=-1)))
+        rgb = F.relu(self.model["proj"](torch.cat((hidden_feats, gamma_d), dim=-1)))
         
         rgb = F.sigmoid(self.model["out"](rgb))
         
