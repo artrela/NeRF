@@ -21,8 +21,9 @@ class SyntheticDataloader():
             t = np.array(image['transform_matrix'])[:3, 3]
             if np.linalg.norm(max_t) < np.linalg.norm(t):
                 max_t = t
-                
-        self.transforms = np.stack(transforms, axis=0) / np.linalg.norm(max_t)
+        
+        self.max_t = max_t
+        self.transforms = np.stack(transforms, axis=0) 
         
         open_image = lambda img: np.asarray(Image.open(data_pth + img + ".png").convert("RGB")) / 255.
         self.images = np.stack([open_image(img['file_path']) for img in data['frames']], axis=0)
@@ -55,6 +56,12 @@ class SyntheticDataloader():
         # d = np.dstack((xc, yc, np.ones(xc.shape))) @ R
         d = np.dstack((xc, yc, -np.ones(xc.shape))) @ R
         o = np.ones((*self.img_shape, 1)) @ t
+        
+        # o += np.random.uniform(-0.0005, 0.0005, o.shape)
+        # d += np.random.uniform(-0.0005, 0.0005, o.shape)
+        
+        o = torch.tensor(o, dtype=torch.float32, device='cuda')
+        d = torch.tensor(d, dtype=torch.float32, device='cuda')
         
         return o, d
     
