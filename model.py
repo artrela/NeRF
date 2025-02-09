@@ -57,7 +57,7 @@ class FFN(torch.nn.Module):
             else:
                 x = layer(torch.concat((x, inp), dim=-1))
                 
-            if idx != len(self.network):
+            if idx != len(self.network)-1:
                 x = F.relu(x)
                 
         return x
@@ -78,16 +78,27 @@ class NeRF(torch.nn.Module):
         })
         
     def forward(self, x: torch.Tensor, d: torch.Tensor):
+        '''
+        x.shape = rays, samples, xyz
+        d.shape = rays, samples, dir
+        '''
         
-        gamma_x = self.model["x_pe"](x)
+        # rays, samples, embedding_size (60)
+        gamma_x = self.model["x_pe"](x) 
 
-        hidden_feats = self.model["ffn"](gamma_x)
+        # rays, samples, 256
+        hidden_feats = self.model["ffn"](gamma_x) 
         
-        sigma = self.model["sigma_layer"](hidden_feats).squeeze(-1)
+        # rays, samples
+        sigma = F.relu(self.model["sigma_layer"](hidden_feats).squeeze(-1))
         
-        gamma_d = self.model["d_pe"](d)
-        rgb = F.relu(self.model["proj"](torch.cat((hidden_feats, gamma_d), dim=-1)))
+        # # rays, samples, embedding_size (24)
+        gamma_d = self.model["d_pe"](d) 
         
+        # rays, samples, 128
+        rgb = F.relu(self.model["proj"](torch.cat((hidden_feats, gamma_d), dim=-1))) 
+        
+        # rays, samples, rgb
         rgb = F.sigmoid(self.model["out"](rgb))
         
         return sigma, rgb
