@@ -15,6 +15,23 @@ def c_pred(sigma, c, t):
 
     return c_hat, wi
 
+'''
+    sigma (rays, samples)
+    c (rays, samples, rgb)
+    t = (rays, samples)
+    
+    # rays, samples-1
+    delta = torch.diff(t)
+    
+    # (rays, samples-1)
+    Ti = torch.exp( - torch.cumsum( sigma[:, :-1] * delta, dim=-1)) # rays, samples-1
+    alpha_i = (1 - torch.exp( - sigma[:, :-1] * delta)) # rays, samples-1 
+    wi = Ti * alpha_i # rays, sample-1
+    
+    c_hat = torch.sum( wi[..., None] * c[:, :-1 , :], dim=1) 
+
+'''
+
 
 def stratified_sampling_rays(N, tn, tf, rays=3):
     '''

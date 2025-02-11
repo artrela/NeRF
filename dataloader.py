@@ -15,18 +15,18 @@ class SyntheticDataloader():
             data_file.close()
         
         transforms = []
-        # max_t = np.zeros(3)
+        max_t = np.zeros(3)
         for image in data['frames']:
             transforms.append(image['transform_matrix'])
-            # t = np.array(image['transform_matrix'])[:3, 3]
-            # if np.linalg.norm(max_t) < np.linalg.norm(t):
-            #     max_t = t
+            t = np.array(image['transform_matrix'])[:3, 3]
+            if np.linalg.norm(max_t) < np.linalg.norm(t):
+                max_t = t
         
-        # self.max_t = max_t
+        self.max_t = max_t
         self.transforms = np.stack(transforms, axis=0) 
         
         open_image = lambda img: np.asarray(Image.open(data_pth + img + ".png").convert("RGB")) / 255.
-        self.images = np.stack([open_image(img['file_path']) for img in data['frames']], axis=0)
+        self.images = np.stack([open_image(img['file_path'][1:]) for img in data['frames']], axis=0)
         
         self.total_pxs = self.images[0].shape[0] * self.images[0].shape[1]
         self.img_shape = self.images[0].shape[:2]
@@ -55,7 +55,7 @@ class SyntheticDataloader():
         # TODO change back to 1 afterwards!
         # d = np.dstack((xc, yc, np.ones(xc.shape))) @ R
         d = np.dstack((xc, yc, -np.ones(xc.shape))) @ R
-        d /= np.linalg.norm(d, axis=-1)
+        d /= np.linalg.norm(d, axis=-1)[..., None]
         o = np.ones((*self.img_shape, 1)) @ t
         
         # o += np.random.uniform(-0.0005, 0.0005, o.shape)
