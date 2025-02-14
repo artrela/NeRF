@@ -8,6 +8,8 @@ import os
 from PIL import Image
 import tqdm
 import argparse
+import render_utils
+from scipy.spatial.transform import Rotation as R
 
 def create_cameras(poses: List[np.ndarray], K: np.ndarray, img_size: int=800)->List[o3d.geometry.LineSet]:
     """ Create camera visualizations using o3d interface
@@ -119,6 +121,8 @@ if __name__ == "__main__":
                         help="Don't launch visualizer, generate an animation.")
     parser.add_argument("-v", "--views", type=int, default=10, required=False,
                         help="The number of camera poses to visualize.")
+    parser.add_argument("-r", "--rays", type=int, default=0, required=False,
+                        help="The number of rays to visualize, per camera.")
     args = parser.parse_args()
     
     print ('\n =============================== ')
@@ -126,7 +130,7 @@ if __name__ == "__main__":
     print (f' ===  Tested Open3D==0.19.0 === ')
     print (' =============================== \n')
     
-    dataset = SyntheticDataloader(pth="data/nerf_synthetic/", item="hotdog")
+    dataset = SyntheticDataloader(pth="data/nerf_synthetic/", item="hotdog", split="train")
 
     # unpack dataset images, poses
     poses, images, cam2img = dataset.transforms, dataset.images, dataset.cam2img
@@ -137,8 +141,61 @@ if __name__ == "__main__":
     images = create_images(images[samples], poses[samples])
     hotdog = create_hotdog()
     
+    def direction_to_euler(d):
+        r = R.from_rotvec(np.cross([0, 0, 1], d) * np.arccos(np.clip(d[2], -1.0, 1.0)))
+        return r.as_matrix()
+    
+    def rot_pos_z():
+        R = np.eye(3)
+        # R[0,1] = R[1,0] = 1
+        R[2, 2] = -1
+        return R
+    
+    def create_rays(dataset, poses, num_rays):
+        
+        if not num_rays:
+            return []
+        
+        rays = []
+        for pose in poses:
+            
+            us, vs = np.random.randint(0, dataset.img_shape[0], size=(2, num_rays))
+            
+            pose[:3, 2] *= -1 # cameras +z points along -z, align o3d coordinate frame
+            # o, d = dataset.get_rays_np(pose)
+            o, d = dataset.create_rays(pose[:3, :3], pose[None, :3, 3])
+            o, d = o.cpu().numpy(), d.cpu().numpy()
+            
+            for idx, (u,v) in enumerate(zip(us, vs)):
+                ray = o3d.geometry.TriangleMesh.create_arrow(
+                    cylinder_radius = 0.01, 
+                    cylinder_height = np.random.uniform(2, 6), 
+                    cone_radius = 0.05, 
+                    cone_height = 0.05, 
+                    resolution = 20, 
+                    cylinder_split = 4, 
+                    cone_split = 1
+                )
+                # if idx == 0:
+                #     breakpoint()
+                # ray.translate(-ray.get_center())
+                ray.rotate(rot_pos_z(), (0,0,0)) # with our convention as camera facing along -z, 
+                # start ray along -z axis
+                
+                ray.rotate(direction_to_euler(d[u,v]), (0,0,0))
+                ray.translate(o[u,v])
+                ray.paint_uniform_color(np.random.rand(3))
+                # ray.transform(pose)
+                rays.append(ray)
+        
+        return rays
+        
+        
+    rays = create_rays(dataset, poses[samples], args.rays)
+    cf = [o3d.geometry.TriangleMesh.create_coordinate_frame(size=0.5)]
+    
     if args.headless:
-        viewer_utils.create_animation(*hotdog, *cameras, *images)
+        viewer_utils.create_animation(*hotdog, *cameras, *images, *rays)
     else:
-        o3d.visualization.draw_geometries(hotdog + cameras + images )
+        o3d.visualization.draw_geometries( hotdog + cameras + images + rays + cf)
     
