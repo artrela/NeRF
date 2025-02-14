@@ -4,6 +4,7 @@ import numpy as np
 import os
 import sys
 import torch
+import cv2
 
 class SyntheticDataloader():
     def __init__(self, pth, item, split):
@@ -25,7 +26,7 @@ class SyntheticDataloader():
         self.max_t = max_t
         self.transforms = np.stack(transforms, axis=0) 
         
-        open_image = lambda img: np.asarray(Image.open(data_pth + img + ".png").convert("RGB")) / 255.
+        open_image = lambda img: cv2.resize(np.asarray(Image.open(data_pth + img + ".png").convert("RGB")) / 255., (400,400))
         self.images = np.stack([open_image(img['file_path'][1:]) for img in data['frames']], axis=0)
         
         self.total_pxs = self.images[0].shape[0] * self.images[0].shape[1]
@@ -53,10 +54,9 @@ class SyntheticDataloader():
         yc = -(v - self.cy) / self.f
         
         # TODO change back to 1 afterwards!
-        # d = np.dstack((xc, yc, np.ones(xc.shape))) @ R
-        d = np.dstack((xc, yc, -np.ones(xc.shape))) @ R
-        d /= np.linalg.norm(d, axis=-1)[..., None]
-        o = np.ones((*self.img_shape, 1)) @ t
+        d = np.dstack((xc, yc, -np.ones(xc.shape))) @ R.T
+        d = d / np.linalg.norm(d, axis=-1, keepdims=True)
+        o = np.broadcast_to(t, d.shape)
         
         # o += np.random.uniform(-0.0005, 0.0005, o.shape)
         # d += np.random.uniform(-0.0005, 0.0005, o.shape)
