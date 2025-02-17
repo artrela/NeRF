@@ -9,15 +9,25 @@ from model import NeRF
 from torchinfo import summary
 from torch.utils.tensorboard import SummaryWriter
 import os
+import gc
 
-exp_name = "rerun_long_gammaDecay"
+gc.collect()
+torch.cuda.empty_cache()
+
+exp_name = "extra_feature_layer"
 writer = SummaryWriter(log_dir=f"runs/{exp_name}/")
 
 SAVE_WEIGHT_PTH = f"data/model_out/{exp_name}/weights/"
+epoch = 0
+LOAD_WEIGHT_PTH = f"data/model_out/{exp_name[7:]}/weights/coarse_nerf_{epoch}.pth"
 RESUME_TRAINING = False
 
 os.makedirs(SAVE_WEIGHT_PTH, exist_ok=True)
 
+# seed = 69
+# np.random.seed(seed)
+# torch.manual_seed(seed)
+# torch.cuda.manual_seed_all(seed)
 #
 # epochs = int(10000)
 epochs = int(100000)
@@ -68,11 +78,13 @@ for a in ax.ravel():
     
     
 if RESUME_TRAINING:
-    checkpoint = torch.load(SAVE_WEIGHT_PTH, weights_only=True)
+    checkpoint = torch.load(LOAD_WEIGHT_PTH, weights_only=True)
     coarse_nerf.load_state_dict(checkpoint['model_state_dict'])
     optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
     epoch = checkpoint['epoch']
     loss = checkpoint['loss']
+    print("Successfully loaded: ", LOAD_WEIGHT_PTH)
+    
 
 # TODO pass in pixels so u can run test and train
 def render(dset, nerf, pose, u, v, rays, w=None, tin=None):
@@ -121,7 +133,7 @@ def render(dset, nerf, pose, u, v, rays, w=None, tin=None):
 
 random_images = np.arange(0, len(train_dset), 1)
 # random_images = [0, 0] # np.arange(0, len(train_dset), 1)
-for i in tqdm.tqdm(range(epochs), desc=f"[Training]", leave=True):
+for i in tqdm.tqdm(range(epoch, epochs), desc=f"[ Total Epochs ]", leave=True):
 # for i in range(epochs):
     
     # random_images = np.random.randint(0, len(train_dset), num_images)
@@ -168,50 +180,84 @@ for i in tqdm.tqdm(range(epochs), desc=f"[Training]", leave=True):
     # torch.cuda.empty_cache()
         
     # tqdm.tqdm.write(f"[Train {i}] Loss: {t_loss:.4f}")
-    tqdm.tqdm.write(f"[Train {i}] Loss: {loss.item():.4f}")
+    t_string = f"[Train {i}] Loss: {loss.item():.4f} "
     # writer.add_scalar("loss/train/", t_loss, i)
     writer.add_scalar("loss/train/", loss.item(), i)
     writer.add_scalar("lr", optimizer.param_groups[0]['lr'], i)
     lr_scheduler.step()
     
+    with torch.no_grad():
+        
+        images, poses = val_dset.images, val_dset.transforms
+        
+        v_loss = 0
+        xs, ds, ts, cts = [], [], [], []
+        for pose, image in tqdm.tqdm(zip(poses, images), desc=f"[Val {i}]", total=100):
+        # for idx, (pose, image) in enumerate(zip(poses, images)):
+            
+            u, v = np.random.randint(0, val_dset.img_shape[0], size=(2, rays_per_image))
+            o, d = val_dset.create_rays(pose[:3, :3], pose[:3, 3]) # (H, W, 3), (H, W, 3)
+            
+            t = stratified_sampling_rays(tn=tn, tf=tf, N=Nc, rays=rays_per_image) # (rays, Nc samples along ray)
+
+            x = o[u, None, v] + t[..., None]*d[u, None, v] # (rays, Nc samples, xyz)
+            d = d[u, None, v].expand(-1, Nc, -1) # arays, Nc samples, xyz)
+            
+            c = torch.tensor(image[u, v], device='cuda', dtype=torch.float32)
+            
+            xs.append(x)
+            ds.append(d)
+            ts.append(t)
+            cts.append(c)
+            
+        xs = torch.concat(xs, 0)
+        ds = torch.concat(ds, 0)
+        ts = torch.concat(ts, 0)
+        cts = torch.concat(cts, 0)
+        
+        sigma, cnfs = coarse_nerf(xs, ds)
+        
+        cps, wi = c_pred(sigma, cnfs, ts)
+        
+        loss = criterion(cps, cts)
+        
+        writer.add_scalar("loss/val/", loss.item(), i)
+    
+        tqdm.tqdm.write(t_string + f"| [Val {i}] Loss: {loss.item():.4f}")
+        
+    # tqdm.tqdm.write(t_string)
+    
     if i % 100 == 0 and i > 0:
         
-        vpose, vimage = val_dset.transforms[0], val_dset.images[0]
+        # vpose, vimage = val_dset.transforms[0], val_dset.images[0]
+        rn = 12 
+        vpose, vimage = val_dset.transforms[rn], val_dset.images[rn]
         
-        # rn = np.random.randint(0, 100)
-        rn = 0 #np.random.randint(0, 100)
+        rn = 0 
         tpose, timage = train_dset.transforms[rn], train_dset.images[rn]
         
         vimage_est = np.zeros_like(image)
         timage_est = np.zeros_like(image)
         
         bundle = 800
-        step = bundle // train_dset.img_shape[0]
-        for row in tqdm.tqdm(range(0, image.shape[0], step), desc="[Val] Rendering Estimate"):
-        # for row in range(image.shape[0]):
-            for chunk in range(0, image.shape[1], bundle):
+        us, vs = np.mgrid[0:image.shape[0], 0:image.shape[1]]
+        us = us.flatten()
+        vs = vs.flatten()
+        for idx in tqdm.tqdm(range(0, len(us), bundle), desc="[Val] Rendering Estimate"):
+            
+            u = us[idx:idx+bundle]
+            v = vs[idx:idx+bundle]  
+            
+            with torch.no_grad():       
+                    
+                vc_hat, wi, ti = render(train_dset, coarse_nerf, vpose, u, v, bundle)
+                # vc_hat, _, _ = render(val_dset, fine_nerf, vpose, u, v, bundle)
                 
-                with torch.no_grad():
-                    
-                    if step <= 1:
-                        v = np.arange(chunk, chunk+bundle)
-                        u = np.ones_like(v) * row
-                    else:
-                        v = np.tile(np.arange(train_dset.img_shape[0]), (step, 1))
-                        u = np.ones_like(v) * (np.arange(step)+row)[:, None]
-                        
-                        u = u.flatten()
-                        v = v.flatten()
-                    
-                    vc_hat, wi, ti = render(train_dset, coarse_nerf, vpose, u, v, bundle)
-                    # vc_hat, _, _ = render(val_dset, fine_nerf, vpose, u, v, bundle)
-                    
-                    tc_hat, wi, ti = render(train_dset, coarse_nerf, tpose, u, v, bundle)
-                    # tc_hat, _, _ = render(train_dset, fine_nerf, tpose, u, v, bundle)
-                    
-                    vimage_est[u, v] = vc_hat.cpu().numpy()
-                    timage_est[u, v] = tc_hat.cpu().numpy()
-                    # print("Zero output?: ", np.all(c_hat.cpu().numpy() == 0))
+                tc_hat, wi, ti = render(train_dset, coarse_nerf, tpose, u, v, bundle)
+                # tc_hat, _, _ = render(train_dset, fine_nerf, tpose, u, v, bundle)
+                
+                vimage_est[u, v] = vc_hat.cpu().numpy()
+                timage_est[u, v] = tc_hat.cpu().numpy()
 
         ax[0, 0].imshow(vimage)
         ax[0, 1].imshow(vimage_est)
@@ -225,15 +271,15 @@ for i in tqdm.tqdm(range(epochs), desc=f"[Training]", leave=True):
         tqdm.tqdm.write(f"[Val {i}] Estimate Empty: {np.all(vimage_est == 0)}")
         
         writer.add_image("val/image0/", vimage_est, i, dataformats="HWC")
-        writer.add_scalar("loss/val/", v_loss, i)
+        # writer.add_scalar("loss/val/", v_loss, i)
         
-    if i % 10000 and i > 0:
+    if i % 10000 == 0 and i > 0:
         torch.save({
             'epoch': i,
             'model_state_dict': coarse_nerf.state_dict(),
             'optimizer_state_dict': optimizer.state_dict(),
             'loss': loss
-            }, SAVE_WEIGHT_PTH)
+            }, SAVE_WEIGHT_PTH + f"/coarse_nerf_{i}.pth")
 
     writer.flush()    
     
