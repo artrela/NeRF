@@ -1,4 +1,4 @@
-from dataloader import SyntheticDataloader
+from dataset.dataloader import SyntheticDataloader
 import open3d as o3d
 import numpy as np
 import random
@@ -147,7 +147,6 @@ if __name__ == "__main__":
     
     def rot_pos_z():
         R = np.eye(3)
-        # R[0,1] = R[1,0] = 1
         R[2, 2] = -1
         return R
     
@@ -157,13 +156,15 @@ if __name__ == "__main__":
             return []
         
         rays = []
+        ray_pts = []
         for pose in poses:
             
             us, vs = np.random.randint(0, dataset.img_shape[0], size=(2, num_rays))
             
+            ray_pts.append(us, vs)
             pose[:3, 2] *= -1 # cameras +z points along -z, align o3d coordinate frame
             # o, d = dataset.get_rays_np(pose)
-            o, d = dataset.create_rays(pose[:3, :3], pose[None, :3, 3])
+            o, d = dataset.create_rays(pose[:3, :3], pose[:3, 3])
             o, d = o.cpu().numpy(), d.cpu().numpy()
             
             for idx, (u,v) in enumerate(zip(us, vs)):
@@ -176,12 +177,8 @@ if __name__ == "__main__":
                     cylinder_split = 4, 
                     cone_split = 1
                 )
-                # if idx == 0:
-                #     breakpoint()
-                # ray.translate(-ray.get_center())
                 ray.rotate(rot_pos_z(), (0,0,0)) # with our convention as camera facing along -z, 
                 # start ray along -z axis
-                
                 ray.rotate(direction_to_euler(d[u,v]), (0,0,0))
                 ray.translate(o[u,v])
                 ray.paint_uniform_color(np.random.rand(3))
@@ -190,12 +187,33 @@ if __name__ == "__main__":
         
         return rays
         
-        
-    rays = create_rays(dataset, poses[samples], args.rays)
+    #TODO place points in the scene to see if that works well
+    rays, ray_pxs = create_rays(dataset, poses[samples], args.rays)
     cf = [o3d.geometry.TriangleMesh.create_coordinate_frame(size=0.5)]
     
+    def create_points(dataset, poses, uvs, Nc):
+        
+        pcd_pts = []
+        
+        for pose, (u, v) in zip(poses, uvs):
+            pose[:3, 2] *= -1
+            o, d = dataset.create_rays(pose[:3, :3], pose[:3, 3]) # (H, W, 3), (H, W, 3)
+            
+            t = render_utils.stratified_sampling_rays(tn=2., tf=6., N=Nc, rays=args.rays) # (rays, Nc samples along ray)
+
+            x = o[u, None, v] + t[..., None]*d[u, None, v] # (rays, Nc samples, xyz)
+            pcd_pts.append(x)
+            
+        pcd = o3d.geometry.PointCloud()
+        pcd.points = o3d.utility.Vector3dVector(np.concatenate(pcd_pts, 0))
+        pcd.paint_uniform_color([0.5, 0.5, 0])        
+        
+        return [pcd]
+    
+    ray_pcd = create_points(dataset, poses[samples], ray_pxs, Nc=64)
+    
     if args.headless:
-        viewer_utils.create_animation(*hotdog, *cameras, *images, *rays)
+        viewer_utils.create_animation(*hotdog, *cameras, *images, *rays, *ray_pcd)
     else:
-        o3d.visualization.draw_geometries( hotdog + cameras + images + rays + cf)
+        o3d.visualization.draw_geometries( hotdog + cameras + images + rays + ray_pcd + cf)
     
