@@ -4,13 +4,13 @@ import glob
 import os
 import torch
 import tqdm
+import yaml
 
-from dataset.dataloader import SyntheticDataloader
+from dataset.dataloader import SyntheticDataloader, SyntheticTestDataloader
 from model.NeRF import NeRF
 import utils.training_utils as train_utils
 
 def main():
-        
     params = train_utils.parse_config("model/config.yaml")
     hparams = params['hparams']
     
@@ -18,15 +18,13 @@ def main():
     logdir = f"runs/{params['name']}/"
     save_model_pth = logdir + "/weights/"
     image_save_pth = logdir + "/images/"
+    video_save_pth = logdir + "/videos/"
     os.makedirs(save_model_pth, exist_ok=True)
     os.makedirs(image_save_pth, exist_ok=True)
+    os.makedirs(video_save_pth, exist_ok=True)
     
     writer = SummaryWriter(logdir)
-    
-    hparams['ffn_skips'] = str(hparams['ffn_skips'])
-    writer.add_hparams(hparams, {}, run_name=params['name'])
     writer.add_text("Additional Notes", params['notes'])
-    hparams['ffn_skips'] = list(hparams['ffn_skips'])
     
     # create the nerf
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -54,6 +52,8 @@ def main():
     model_summary = str(summary(coarse_nerf, depth=4))
     with open(save_model_pth + "/coarse_nerf_arch.txt",  "+w", encoding="utf-8") as arch_file:
         arch_file.write(model_summary)
+    with open(save_model_pth + "/experiment_params.yaml",  "+w", encoding="utf-8") as params_file:
+        yaml.dump(params, params_file)
     
     optimizer = torch.optim.Adam(coarse_nerf.parameters(), hparams['lr'])
     gamma = train_utils.compute_gamma(hparams['lr'], hparams['lr'] * hparams['lr_decay'], epochs)
@@ -67,10 +67,8 @@ def main():
                                     item_sampling=False, resize=hparams['resize'], shuffle=True, device=device)
     val_dset = SyntheticDataloader("data/nerf_synthetic/", "hotdog", "val",
                                 item_sampling=False, resize=hparams['resize'], shuffle=False, device=device)
-
-    if hparams['normalize_scene']:
-        train_dset.normalize()
-        val_dset.normalize(train_dset.max_t)
+    test_dset = SyntheticTestDataloader("data/nerf_synthetic/", "hotdog",
+                                        img_shape=train_dset.H, device=device)
     
     for i in tqdm.tqdm(range(epoch, epochs), desc="Training Nerf"):
         
@@ -83,19 +81,20 @@ def main():
             val_loss = train_utils.render_loop(coarse_nerf, val_dset, criterion, 
                                                 hparams, train=False)
         
-        avg_train_loss = train_loss / len(train_dset)
-        avg_val_loss = val_loss / len(val_dset)
-        writer.add_scalars("loss", {
-            'train': avg_train_loss,
-            'val': avg_val_loss
-        })
-        writer.add_scalar("lr", optimizer.param_groups[0]['lr'])
+        writer.add_scalar("loss/train/", train_loss, i)
+        writer.add_scalar("loss/val/", val_loss, i)
+        writer.add_scalar("lr", optimizer.param_groups[0]['lr'], i)    
         
-        tqdm.tqdm.write(f"== Training Loss: {avg_train_loss:.5f} == Validation Loss: {avg_val_loss:.5f} == ")
+        tqdm.tqdm.write(f"== Epoch {i:0{len(str(epochs))}d} == Training Loss: {train_loss:.5f} == Validation Loss: {val_loss:.5f} == ")
             
         if i % params['render_interval'] == 0 and i > 0:
             with torch.no_grad():
-                train_utils.render_image(coarse_nerf, train_dset, val_dset, save_model_pth,
+                train_utils.render_image(coarse_nerf, train_dset, val_dset, image_save_pth + f"/coarse_nerf_{i:0{len(str(epochs))}d}.png",
+                                    params['render_batch'], hparams)
+                
+        if i % params['render_video'] == 0 and i > 0:
+            with torch.no_grad():
+                train_utils.render_video(coarse_nerf, test_dset, video_save_pth + f"/coarse_nerf_{i:0{len(str(epochs))}d}.gif",
                                     params['render_batch'], hparams)
         
         if i % params['save_weights_interval'] == 0 and i > 0:
@@ -104,7 +103,7 @@ def main():
                 'model_state_dict': coarse_nerf.state_dict(),
                 'optimizer_state_dict': optimizer.state_dict(),
                 'loss': train_loss
-                }, save_model_pth + f"/coarse_nerf_{i:0<len(str(epochs))}.pth")
+                }, save_model_pth + f"/coarse_nerf_{i:0{len(str(epochs))}d}.pth")
 
         writer.flush()    
     
