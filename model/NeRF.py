@@ -26,7 +26,7 @@ class NeRF(torch.nn.Module):
         self.model = torch.nn.ModuleDict({
             "x_pe": PositionalEncoding(x_pe, pe_include_inp),
             "d_pe": PositionalEncoding(d_pe, pe_include_inp),
-            "ffn": FFN(x_pe_out, hid_dim, num_layers=ffn_layers, skips=ffn_skips,),
+            "ffn": FFN(x_pe_out, hid_dim, num_layers=ffn_layers, skips=ffn_skips),
             "sigma_layer": torch.nn.Linear(hid_dim, 1),
             "feature_layer": torch.nn.Linear(hid_dim + d_pe_out, hid_dim // 2),
             "rgb": torch.nn.Linear(hid_dim // 2, 3)
@@ -47,7 +47,14 @@ class NeRF(torch.nn.Module):
         hidden_feats = self.model["ffn"](gamma_x) # (rays, samples, x_pe_out) -> (rays, samples, hid_dim)
         
         # (rays, samples, hid_dim) -> (rays, samples, 1)
-        sigma = F.relu(self.model["sigma_layer"](hidden_feats))
+        # sigma = F.relu(self.model["sigma_layer"](hidden_feats))
+        sigma = self.model["sigma_layer"](hidden_feats)
+        
+        if self.training:
+            noise = torch.empty_like(sigma).normal_().to(sigma.device)
+            sigma = noise + sigma
+        
+        sigma = F.relu(sigma)
         
         gamma_d = self.model["d_pe"](d) # (rays, samples, 3) -> (rays, samples, d_pe_out)
         
