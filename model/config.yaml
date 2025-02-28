@@ -3,15 +3,16 @@ resume_training: !!bool False
 fine_nerf: !!bool False
 save_weights_interval: !!int 5000
 render_interval: !!int 100
-render_batch: !!int 800
+render_video: !!int 5000
+render_batch: !!int 1600
 hparams:
-  Nc: !!int 128
+  Nc: !!int 200
   resize: !!int 400
   epochs: !!int 100000
   lr: !!float 0.0005
   lr_decay: !!float 0.1
-  tn: !!float 0.01
-  tf: !!float 1.5
+  tn: !!float 2.
+  tf: !!float 6.
   x_pe: !!int 10
   d_pe: !!int 4
   pe_include_input: !!bool True
@@ -19,7 +20,6 @@ hparams:
   ffn_skips: !!seq [4]
   hid_dim: !!int 256
   rays_per_image: !!int 30
-  normalize_scene: !!bool True
+  noise_in_training: !!bool False
 notes: | 
-
   
